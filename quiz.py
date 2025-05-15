@@ -6,10 +6,37 @@ import numpy as np
 
 from capitals_gt import country_capitals as COUNTRY_CAPITALS
 
-NUM_QUESTIONS = 20
-NUM_VALIDATION = 10
+NUM_QUESTIONS = 14
+NUM_VALIDATION = 7
 
-def calculate_optimal_guesses(selected_options: List[List[str]], validation_indices: Set[int], questions: List[Dict]) -> Optional[int]:
+def sum_of_k_subset_products(p, k):
+    coeffs = [1]
+    for x in p:
+        new_coeffs = [0] * (min(len(coeffs) + 1, k + 1))
+        for i in range(len(coeffs)):
+            new_coeffs[i] += coeffs[i]
+            if i + 1 <= k:
+                new_coeffs[i + 1] += coeffs[i] * x
+        coeffs = new_coeffs
+    return coeffs[k] if k <= len(coeffs) - 1 else 0
+
+def permutation_rank(a):
+    sorted_a = sorted(a)
+    perm = [sorted_a.index(x) for x in a]
+    n = len(perm)
+    rank = 0
+    used = [False] * n
+    for i in range(n):
+        less = sum(1 for j in range(perm[i]) if not used[j])
+        rank += less * math.factorial(n - i - 1)
+        used[perm[i]] = True
+    return rank + 1
+
+def calculate_optimal_guesses(
+        selected_options: List[List[str]],
+        validation_indices: Set[int], 
+        questions: List[Dict]
+    ) -> Optional[int]:
     """
     Calculate optimal number of guesses needed to find validation set and correct answers.
     
@@ -25,7 +52,7 @@ def calculate_optimal_guesses(selected_options: List[List[str]], validation_indi
     processed_selections = []
     for i, selections in enumerate(selected_options):
         if not selections:  # If no options selected, consider all options selected
-            processed_selections.append((4, questions[i]['options'].index(questions[i]['correct'])))
+            processed_selections.append((8, questions[i]['options'].index(questions[i]['correct'])))
         else:
             if questions[i]['correct'] not in selections:
                 return None
@@ -42,13 +69,14 @@ def calculate_optimal_guesses(selected_options: List[List[str]], validation_indi
     ks = [i+1 for i in range(len(validation_indices))]
 
     total_guesses = 0
-    for val, k in zip(validation_selections[::-1], ks[::-1]):
+    processed_selections_guesses = [i[0] for i in processed_selections]
+    for val, k in zip(validation_selections, ks):
         m, t = val
-        print(m,k,t)
-        if m > k:
-            total_guesses += (math.factorial(m-1) // math.factorial(k))
-        total_guesses += (t * k * math.factorial(m-1) // math.factorial(k-1))
+        total_guesses += sum_of_k_subset_products(processed_selections_guesses[:m-1], k)
+        total_guesses += t * sum_of_k_subset_products(processed_selections_guesses[:m-1], k-1)
     
+    total_guesses *= math.factorial(k) 
+    total_guesses += permutation_rank(validation_indices)
     return total_guesses
 
 def get_quiz():
@@ -56,8 +84,8 @@ def get_quiz():
     questions = []
     for country in countries:
         correct = COUNTRY_CAPITALS[country]
-        # Get 3 random wrong answers
-        wrong_answers = random.sample([c for c in COUNTRY_CAPITALS.values() if c != correct], 3)
+        # Get 7 random wrong answers
+        wrong_answers = random.sample([c for c in COUNTRY_CAPITALS.values() if c != correct], 7)
         options = wrong_answers + [correct]
         random.shuffle(options)
         questions.append({
@@ -65,7 +93,7 @@ def get_quiz():
             'correct': correct,
             'options': options
         })
-    validation_indices = set(random.sample(range(NUM_QUESTIONS), NUM_VALIDATION))
+    validation_indices = random.sample(range(NUM_QUESTIONS), NUM_VALIDATION)
     return questions, validation_indices
 
 # Initialize session state
@@ -78,7 +106,9 @@ if 'initialized' not in st.session_state:
     st.session_state.initialized = True
 
 st.title("Country-Capital Quiz")
-st.write("Select the capital for each country. 5 questions are validation questions (chosen randomly).")
+st.write("Select the capital for each country. 7 questions are validation questions.")
+st.write("For each choose set of answer, where you are sure that the right answer is inside.")
+st.write("After submitting your answers, the program will calculate the optimal number of guesses needed to find the right answer.")
 
 def check_win_condition():
     # Check if all validation questions are answered correctly
@@ -89,14 +119,33 @@ def check_win_condition():
     return True
 
 if not st.session_state.finished:
-    # Display quiz for user
     for idx, q in enumerate(st.session_state.quiz):
         st.markdown(f"**{idx+1}. {q['country']}**")
-        cols = st.columns(4)
-        for opt_idx, opt in enumerate(q['options']):
-            if cols[opt_idx].button(
+        # Create two rows of 4 columns each
+        row1_cols = st.columns(4)
+        row2_cols = st.columns(4)
+        
+        # First row (options 0-3)
+        for opt_idx, opt in enumerate(q['options'][:4]):
+            if row1_cols[opt_idx].button(
                 opt, 
                 key=f"{idx}-{opt_idx}",
+                type="primary" if opt in st.session_state.selected[idx] else "secondary"
+            ):
+                if opt in st.session_state.selected[idx]:
+                    st.session_state.selected[idx].remove(opt)
+                else:
+                    st.session_state.selected[idx].append(opt)
+                st.session_state.clicks += 1
+                if idx not in st.session_state.validation_indices:
+                    st.session_state.non_validation_clicks += 1
+                st.rerun()
+        
+        # Second row (options 4-7)
+        for opt_idx, opt in enumerate(q['options'][4:]):
+            if row2_cols[opt_idx].button(
+                opt, 
+                key=f"{idx}-{opt_idx+4}",
                 type="primary" if opt in st.session_state.selected[idx] else "secondary"
             ):
                 if opt in st.session_state.selected[idx]:
@@ -142,8 +191,26 @@ if st.session_state.finished:
                 correct_non_validation += 1
 
     if optimal_guesses is not None:
-        st.write("**Right answer is inside your answer!**")
+
         formatted_guesses = f"{optimal_guesses:.2e}"
+        e_perfect = (math.factorial(NUM_QUESTIONS) // math.factorial(NUM_QUESTIONS-NUM_VALIDATION) + 1) / 2
+        e_perfect_formatted = f"{e_perfect:.2e}"
+        std_perfect = math.sqrt(((math.factorial(NUM_QUESTIONS) // math.factorial(NUM_QUESTIONS-NUM_VALIDATION))**2 - 1) / 12)
+        std_perfect_formatted = f"{std_perfect:.2e}"
+        st.write("**Right answer is inside your answer!**")
         st.write(f"**Actual number of guesses needed to find it, based on your answers:** {formatted_guesses}")
+        cnt = []
+        for _ in range(1000):
+            validation_indices = random.sample(range(NUM_QUESTIONS), NUM_VALIDATION)
+            optimal_guesses = calculate_optimal_guesses(
+                st.session_state.selected,
+                validation_indices,
+                st.session_state.quiz
+            )
+            cnt.append(optimal_guesses)
+        st.write(f"**Estimated Average of number of guesses for your answer**: {np.mean(cnt):.2e}")
+        st.write(f"**Estimated STD of number of guesses for your answer**: {np.std(cnt):.2e}")
+        st.write(f"**Average number of guesses with perfect answers:** {e_perfect_formatted} guesses")
+        st.write(f"**STD of number of guesses with perfect answers:** {std_perfect_formatted} guesses")
     else:
         st.write("**Impossible to find validation set with current selections**")
