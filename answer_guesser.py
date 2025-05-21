@@ -1,11 +1,120 @@
 import pandas as pd
-import hashlib
-from typing import List, Tuple, Set, Dict, Optional
 import itertools
+import math
+import hashlib
+import streamlit as st
+import random
 from collections import defaultdict
 from constants import get_parameters
-import time
-import streamlit as st
+from typing import List, Tuple, Optional, Dict
+
+class AllCombinationsIterator:
+    def __init__(
+        self,
+        initial_data: List[List[Tuple[str, List[str]]]],
+        k: int,
+        target_hash: str,
+        cost_of_mistake: int,
+    ):
+        self.initial_data = initial_data
+        self.k = k
+        self.n = len(initial_data)
+        self.target_hash = target_hash
+        self.cost_of_mistake = cost_of_mistake
+
+        self.initial_lengths = [
+            [len(options) for _, options in task]
+            for task in self.initial_data
+        ]
+
+        self.index_subsets = sorted(
+            itertools.combinations(range(self.n), k),
+            key=self._combo_size
+        )
+
+        self.subset_idx = 0
+        self.perms = []
+        self.perm_idx = 0
+        self.bases = []
+        self.choice_idx = []
+        self.finished = False
+        self._init_subset(0) if self.index_subsets else self._finish()
+
+    def _combo_size(self, indices):
+        return math.prod(
+            length
+            for i in indices
+            for length in self.initial_lengths[i]
+        )
+
+    def _init_subset(self, subset_idx):
+        self.subset_indices = list(self.index_subsets[subset_idx])
+        self.perms = list(itertools.permutations(range(self.k)))
+        self.perm_idx = 0
+        self._init_perm(0)
+
+    def _init_perm(self, perm_idx):
+        self.perm = self.perms[perm_idx]
+        self.bases = list(itertools.chain.from_iterable(
+            self.initial_lengths[self.subset_indices[i]] for i in self.perm
+        ))
+        self.choice_idx = [0] * len(self.bases)
+
+    def _finish(self):
+        self.finished = True
+        self.choice_idx = []
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        while not self.finished:
+            flat_data = itertools.chain.from_iterable(
+                self.initial_data[self.subset_indices[i]] for i in self.perm
+            )
+            keys = []
+            values = []
+            for (key, options), idx in zip(flat_data, self.choice_idx):
+                keys.append(key)
+                values.append(options[idx])
+
+            combined = ''.join(keys) + ''.join(values)
+            for cost in range(self.cost_of_mistake + 1):
+                test_combined = combined + str(cost)
+                current_hash = hashlib.sha256(test_combined.encode()).hexdigest()
+                if current_hash == self.target_hash:
+                    outside_values = []
+                    chosen_keys = set(keys)
+                    for group in self.initial_data:
+                        for key, options in group:
+                            if key not in chosen_keys:
+                                outside_values.append((key, random.choice(options)))
+
+                    return list(zip(keys, values)), outside_values, cost
+
+            self._advance()
+
+        return [], [], 0
+
+    def _advance(self):
+        i = len(self.choice_idx) - 1
+        while i >= 0:
+            self.choice_idx[i] += 1
+            if self.choice_idx[i] < self.bases[i]:
+                return
+            self.choice_idx[i] = 0
+            i -= 1
+
+        self.perm_idx += 1
+        if self.perm_idx < len(self.perms):
+            self._init_perm(self.perm_idx)
+        else:
+            self.subset_idx += 1
+            if self.subset_idx < len(self.index_subsets):
+                self._init_subset(self.subset_idx)
+            else:
+                self._finish()
+
 
 def load_answers() -> pd.DataFrame:
     """Load answers from session state"""
@@ -19,68 +128,52 @@ def load_target_hash() -> str:
         raise ValueError("Target hash not found in session state")
     return st.session_state.target_hash
 
-def get_country_variants(df: pd.DataFrame) -> List[Tuple[str, List[str]]]:
-    """Get list of (country, capitals) tuples sorted by number of capitals"""
-    country_variants = []
-    for _, row in df.iterrows():
-        capitals = row['capitals'].split('|')
-        country_variants.append((row['country'], capitals))
-    
-    # Sort by number of variants (capitals) in increasing order
-    return sorted(country_variants, key=lambda x: len(x[1]))
 
-def generate_combinations(n: int, k: int, variants: List[Tuple[str, List[str]]]):
-    if k == 0:
-        yield [], []
-        return
-    for i in range(k-1, n):
-        country, capitals = variants[i]
-        for prev_countries, prev_capitals in generate_combinations(i, k-1, variants):
-            yield prev_countries + [country], prev_capitals + [capitals]
+def get_group_variants(df: pd.DataFrame) -> List[List[Tuple[str, List[str]]]]:
+    """Get list of groups, each is a list of (country, capitals) tuples."""
+    grouped_questions = defaultdict(list)
+
+    for _, row in df.iterrows():
+        group = row['group']
+        capitals = row['capitals'].split('|')
+        grouped_questions[group].append((row['country'], capitals))
+
+    return list(grouped_questions.values())
+
+def sum_over_k_subsets(
+    A: List[List[Tuple[str, List[str]]]], 
+    k: int
+) -> int:
+    total = 0
+    for subset in itertools.combinations(A, k):
+        product = 1
+        for task in subset:
+            for _, vals in task:
+                product *= (len(vals)if len(vals) > 0 else 4)
+        total += product
+    return total
+
+def count_complexity() -> int:
+    """Count complexity of the answers"""
+    answers_df = load_answers()
+    group_variants = get_group_variants(answers_df)
+    _, validation_size, _, cost_of_mistake = get_parameters()
+    return sum_over_k_subsets(group_variants, validation_size) * (cost_of_mistake + 1) * math.factorial(validation_size) // 2
 
 def find_validation_set() -> Tuple[Optional[List[Tuple[str, str]]], Dict[str, Optional[str]]]:
     """Find validation set that matches target hash and return last attempted answers for all questions"""
-    # Load data
     answers_df = load_answers()
-    if answers_df.empty:
-        return [], {}
-    
+    group_variants = get_group_variants(answers_df)
     target_hash = load_target_hash()
-    
-    # Get current parameters
-    _, validation_size, timeout = get_parameters()
-    country_variants = get_country_variants(answers_df)
-    n_countries = len(country_variants)
-    
-    # Initialize last_attempts with None for all countries
-    last_attempts: Dict[str, Optional[str]] = {row['country']: None for _, row in answers_df.iterrows()}
-    
-    try:
-        start_time = time.time()
-        for countries, capitals_lists in generate_combinations(n_countries, validation_size, country_variants):
-            if time.time() - start_time > timeout:
-                return ['timeout'], last_attempts
-                
-            for capital_combination in itertools.product(*capitals_lists):
-                # Store the last attempted answer for each country
-                for country, capital in zip(countries, capital_combination):
-                    last_attempts[country] = capital
-                
-                # Try all possible permutations of the country-capital pairs
-                pairs = list(zip(countries, capital_combination))
-                for perm in itertools.permutations(pairs):
-                    # First concatenate all countries, then all capitals
-                    perm_countries, perm_capitals = zip(*perm)
-                    combined = ''.join(perm_countries) + ''.join(perm_capitals)
-                    current_hash = hashlib.sha256(combined.encode()).hexdigest()
-                    
-                    if current_hash == target_hash:
-                        return list(perm), last_attempts
-        
-        return [], last_attempts
-    except Exception as e:
-        print(f"Error: {e}")
-        return [], last_attempts
+    _, validation_size, _, cost_of_mistake = get_parameters()
+
+    combinator = AllCombinationsIterator(
+        group_variants, 
+        validation_size, 
+        target_hash, 
+        cost_of_mistake
+    )
+    return next(combinator)
 
 if __name__ == "__main__":
     try:

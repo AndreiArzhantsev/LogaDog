@@ -1,25 +1,21 @@
 from typing import Tuple
 
-# Default values
 NUM_QUESTIONS = 10
+QUESTIONS_PER_GROUP = 3
 VALIDATION_SIZE = 5
-TIMEOUT = 30
+COST_OF_MISTAKE = 10
 
-# Current values (can be updated)
-_current_num_questions = NUM_QUESTIONS
-_current_validation_size = VALIDATION_SIZE
-_current_timeout = TIMEOUT
 
-def update_parameters(num_questions: int = None, validation_size: int = None, timeout: int = None):
-    """Update the current parameters"""
-    global _current_num_questions, _current_validation_size, _current_timeout
-    if num_questions is not None:
-        _current_num_questions = num_questions
-    if validation_size is not None:
-        _current_validation_size = validation_size
-    if timeout is not None:
-        _current_timeout = timeout
+def update_parameters(num_questions: int, validation_size: int, questions_per_group: int = None, cost_of_mistake: int = None):
+    """Update the parameters"""
+    global NUM_QUESTIONS, VALIDATION_SIZE, QUESTIONS_PER_GROUP, COST_OF_MISTAKE
+    NUM_QUESTIONS = num_questions
+    VALIDATION_SIZE = validation_size
+    if questions_per_group is not None:
+        QUESTIONS_PER_GROUP = questions_per_group
+    if cost_of_mistake is not None:
+        COST_OF_MISTAKE = cost_of_mistake
 
 def get_parameters():
-    """Get the current parameters"""
-    return _current_num_questions, _current_validation_size, _current_timeout 
+    """Get current parameters"""
+    return NUM_QUESTIONS, VALIDATION_SIZE, QUESTIONS_PER_GROUP, COST_OF_MISTAKE 
